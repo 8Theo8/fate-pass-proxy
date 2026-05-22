@@ -3,37 +3,37 @@ import express from "express";
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const cache = new Map();
 const CACHE_MS = 5 * 60 * 1000;
+const cache = new Map();
 
-async function robloxGetJson(url) {
-  const res = await fetch(url, {
+async function getJson(url) {
+  const response = await fetch(url, {
     headers: {
       "User-Agent": "FateSpotlightPassScanner/1.0"
     }
   });
 
-  if (!res.ok) {
-    throw new Error(`${res.status} ${res.statusText} for ${url}`);
+  if (!response.ok) {
+    throw new Error(`${response.status} ${response.statusText} - ${url}`);
   }
 
-  return await res.json();
+  return await response.json();
 }
 
-async function getUserUniverses(userId) {
-  const universes = [];
+async function getUserGames(userId) {
+  const games = [];
   let cursor = "";
 
-  for (let page = 0; page < 3; page++) {
+  for (let page = 0; page < 5; page++) {
     const url =
       `https://games.roblox.com/v2/users/${userId}/games?accessFilter=Public&sortOrder=Asc&limit=50` +
-      (cursor ? `&cursor=${cursor}` : "");
+      (cursor ? `&cursor=${encodeURIComponent(cursor)}` : "");
 
-    const data = await robloxGetJson(url);
+    const data = await getJson(url);
 
     for (const game of data.data || []) {
       if (game.id) {
-        universes.push({
+        games.push({
           universeId: game.id,
           name: game.name || "Experience"
         });
@@ -44,30 +44,44 @@ async function getUserUniverses(userId) {
     cursor = data.nextPageCursor;
   }
 
-  return universes;
+  return games;
 }
 
-async function getPassesForUniverse(universeId) {
+async function getGamePasses(universeId) {
   const passes = [];
   let cursor = "";
 
-  for (let page = 0; page < 2; page++) {
+  for (let page = 0; page < 5; page++) {
     const url =
-      `https://apis.roblox.com/game-passes/v1/universes/${universeId}/game-passes?limit=50` +
-      (cursor ? `&cursor=${cursor}` : "");
+      `https://apis.roblox.com/game-passes/v1/universes/${universeId}/game-passes?limit=50&passView=Full` +
+      (cursor ? `&cursor=${encodeURIComponent(cursor)}` : "");
 
-    const data = await robloxGetJson(url);
+    const data = await getJson(url);
 
-    for (const pass of data.gamePasses || data.data || []) {
+    const list = data.gamePasses || data.data || [];
+
+    for (const pass of list) {
       const id = pass.id || pass.gamePassId;
-      const name = pass.name || "Game Pass";
-      const price = pass.price || pass.priceInRobux || 0;
+      const name = pass.name || pass.displayName || "Game Pass";
+      const price =
+        pass.priceInRobux ??
+        pass.price ??
+        pass.product?.priceInRobux ??
+        0;
+
+      const iconImageAssetId =
+        pass.iconImageAssetId ??
+        pass.iconAssetId ??
+        pass.iconImageId ??
+        0;
 
       if (id) {
         passes.push({
           id,
           name,
-          price
+          price,
+          iconImageAssetId,
+          universeId
         });
       }
     }
@@ -79,56 +93,87 @@ async function getPassesForUniverse(universeId) {
   return passes;
 }
 
+app.get("/", (req, res) => {
+  res.json({
+    status: "Fate Spotlight pass proxy is running",
+    test: "/api/passes?userId=1"
+  });
+});
+
 app.get("/api/passes", async (req, res) => {
   try {
     const userId = Number(req.query.userId);
     const limit = Math.min(Number(req.query.limit) || 10, 10);
 
     if (!userId) {
-      return res.status(400).json({ error: "Missing userId" });
+      return res.status(400).json({
+        error: "Missing or invalid userId"
+      });
     }
 
-    const cacheKey = String(userId);
+    const cacheKey = `${userId}:${limit}`;
     const cached = cache.get(cacheKey);
 
     if (cached && Date.now() - cached.time < CACHE_MS) {
-      return res.json({ passes: cached.passes.slice(0, limit) });
+      return res.json(cached.data);
     }
 
-    const universes = await getUserUniverses(userId);
+    const games = await getUserGames(userId);
     const allPasses = [];
 
-    for (const universe of universes) {
-      const passes = await getPassesForUniverse(universe.universeId);
+    for (const game of games) {
+      const passes = await getGamePasses(game.universeId);
 
       for (const pass of passes) {
-        if (pass.price && pass.price > 0) {
-          allPasses.push(pass);
+        const price = Number(pass.price) || 0;
+
+        if (price > 0) {
+          allPasses.push({
+            id: Number(pass.id),
+            name: pass.name,
+            price,
+            iconImageAssetId: Number(pass.iconImageAssetId) || 0,
+            universeId: game.universeId,
+            universeName: game.name
+          });
         }
       }
-
-      if (allPasses.length >= limit * 3) break;
     }
 
-    allPasses.sort((a, b) => a.price - b.price);
+    const seen = new Set();
 
-    const finalPasses = allPasses.slice(0, limit);
+    const finalPasses = allPasses
+      .filter((pass) => {
+        if (!pass.id || seen.has(pass.id)) return false;
+        seen.add(pass.id);
+        return true;
+      })
+      .sort((a, b) => a.price - b.price)
+      .slice(0, limit);
+
+    const result = {
+      userId,
+      gameCount: games.length,
+      passCount: finalPasses.length,
+      passes: finalPasses
+    };
 
     cache.set(cacheKey, {
       time: Date.now(),
-      passes: finalPasses
+      data: result
     });
 
-    res.json({ passes: finalPasses });
-  } catch (err) {
-    console.error(err);
+    res.json(result);
+  } catch (error) {
+    console.error("[PASS SCANNER ERROR]", error);
+
     res.status(500).json({
       error: "Failed to scan passes",
-      details: String(err.message || err)
+      details: String(error.message || error)
     });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`Fate pass proxy running on port ${PORT}`);
+  console.log(`Fate Spotlight pass proxy running on port ${PORT}`);
 });
