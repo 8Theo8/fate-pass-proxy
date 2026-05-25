@@ -7,11 +7,15 @@ const CACHE_MS = 5 * 60 * 1000;
 const cache = new Map();
 
 async function getJson(url) {
-  const response = await fetch(url, {
-    headers: {
-      "User-Agent": "FateSpotlightPassScanner/1.0"
-    }
-  });
+  const headers = {
+    "User-Agent": "FateSpotlightPassScanner/1.0"
+  };
+
+  if (process.env.ROBLOX_API_KEY) {
+    headers["x-api-key"] = process.env.ROBLOX_API_KEY;
+  }
+
+  const response = await fetch(url, { headers });
 
   if (!response.ok) {
     throw new Error(`${response.status} ${response.statusText} - ${url}`);
@@ -19,7 +23,6 @@ async function getJson(url) {
 
   return await response.json();
 }
-
 async function getUserGames(userId) {
   const games = [];
   let cursor = "";
