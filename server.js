@@ -56,7 +56,7 @@ async function getGamePasses(universeId) {
 
   for (let page = 0; page < 5; page++) {
     const url =
-      `https://apis.roblox.com/game-passes/v1/universes/${universeId}/game-passes/creator?limit=50` +
+      `https://apis.roblox.com/game-passes/v1/universes/${universeId}/game-passes?limit=50&passView=Full` +
       (cursor ? `&cursor=${encodeURIComponent(cursor)}` : "");
 
     const data = await getJson(url);
@@ -64,13 +64,14 @@ async function getGamePasses(universeId) {
     const list = data.gamePasses || data.data || [];
 
     for (const pass of list) {
-      const id = pass.gamePassId || pass.id;
-      const name = pass.name || "Game Pass";
+      const id = pass.id || pass.gamePassId;
+      const name = pass.name || pass.displayName || "Game Pass";
 
       const price =
         pass.priceInformation?.defaultPriceInRobux ??
         pass.priceInRobux ??
         pass.price ??
+        pass.product?.priceInRobux ??
         0;
 
       const iconImageAssetId =
@@ -90,8 +91,8 @@ async function getGamePasses(universeId) {
       }
     }
 
-    if (!data.nextPageCursor) break;
-    cursor = data.nextPageCursor;
+    if (!data.nextPageCursor && !data.nextPageToken) break;
+    cursor = data.nextPageCursor || data.nextPageToken || "";
   }
 
   return passes;
